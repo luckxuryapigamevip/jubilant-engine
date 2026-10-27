@@ -1,5 +1,5 @@
 // ============================================================
-// VIP TOOL LC79 - FULL BACKEND (AI + WSS + AUTO BET)
+// VIP TOOL LC79 - FULL BACKEND (AI + WSS + AUTO BET + CUSTOM BET)
 // ============================================================
 const express = require('express');
 const http = require('http');
@@ -8,11 +8,11 @@ const { Server } = require('socket.io');
 const { io } = require('socket.io-client');
 const axios = require('axios');
 const crypto = require('crypto');
-const cors = require('cors'); // <-- Đã thêm thư viện CORS
+const cors = require('cors');
 
 const app = express();
 
-// FIX LỖI CORS: Cho phép tất cả các nguồn gọi API
+// FIX LỖI CORS: Cho phép tất cả các nguồn gọi API (Localhost, Vercel, Render...)
 app.use(cors({ origin: "*", methods: ["GET", "POST"] }));
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
@@ -27,7 +27,7 @@ const ioServer = new Server(server, {
 });
 
 // ============================================================
-// 1. THUẬT TOÁN AI REALBRAIN ULTRA (CHUYỂN TỪ PYTHON)
+// 1. THUẬT TOÁN AI REALBRAIN ULTRA (CHUYỂN TỪ PYTHON SANG JS)
 // ============================================================
 class RealBrainUltra {
     constructor() {
@@ -57,6 +57,7 @@ class RealBrainUltra {
             if (typeof h === 'object' && h.total !== undefined) this.sums.push(h.total);
             else this.sums.push(10);
         }
+        // Giới hạn bộ nhớ (lưu tối đa 2000 phiên)
         if (this.results.length > 2000) {
             this.results = this.results.slice(-2000);
             this.sums = this.sums.slice(-2000);
@@ -66,12 +67,13 @@ class RealBrainUltra {
     learn() {
         const all_res = this.results;
         const n = all_res.length;
-        if (n < 15) return;
+        if (n < 15) return; // Cần ít nhất 15 phiên để bắt đầu học
 
         this.pattern_memory = {}; this.pattern_total = {}; this.markov_chain = {};
         this.transition_matrix = {}; this.super_pattern = {};
 
         for (let i = 0; i < n; i++) {
+            // N-Gram (2,3,4,5,6)
             for (let plen of [2, 3, 4, 5, 6]) {
                 if (i >= plen) {
                     let pat = all_res.slice(i - plen, i).join(',');
@@ -81,18 +83,21 @@ class RealBrainUltra {
                     this.pattern_total[pat] = (this.pattern_total[pat] || 0) + 1;
                 }
             }
+            // Markov 1 bước
             if (i >= 1) {
                 let k = all_res[i - 1];
                 if (!this.markov_chain[k]) this.markov_chain[k] = {};
                 let nxt = all_res[i];
                 this.markov_chain[k][nxt] = (this.markov_chain[k][nxt] || 0) + 1;
             }
+            // Markov 2 bước
             if (i >= 2) {
                 let k = all_res[i - 2] + ',' + all_res[i - 1];
                 if (!this.transition_matrix[k]) this.transition_matrix[k] = {};
                 let nxt = all_res[i];
                 this.transition_matrix[k][nxt] = (this.transition_matrix[k][nxt] || 0) + 1;
             }
+            // Super Pattern 4 bước
             if (i >= 4) {
                 let k = all_res.slice(i - 4, i).join(',');
                 if (!this.super_pattern[k]) this.super_pattern[k] = {};
@@ -101,6 +106,7 @@ class RealBrainUltra {
             }
         }
 
+        // Streak memory (Bệt)
         this.streak_memory = {};
         let i = 0;
         while (i < n) {
@@ -116,6 +122,7 @@ class RealBrainUltra {
             i = j;
         }
 
+        // Xu hướng 20 phiên
         if (all_res.length >= 20) {
             let recent = all_res.slice(-20);
             let t = recent.filter(x => x === 'TAI').length;
@@ -123,6 +130,7 @@ class RealBrainUltra {
             this.trend_strength = (t - x) / 20;
         }
 
+        // Độ biến động
         if (all_res.length >= 10) {
             let recent50 = all_res.slice(-50);
             let changes = 0;
@@ -245,11 +253,13 @@ class RealBrainUltra {
         let last = r[n - 1];
         let last_sum = this.sums[this.sums.length - 1] || 10;
 
+        // Đếm chuỗi bệt hiện tại
         let s = 1;
         for (let i = n - 2; i >= 0; i--) { if (r[i] === last) s++; else break; }
 
         let cands = [];
 
+        // 1. N-Gram dự đoán
         for (let plen of [2, 3, 4, 5, 6]) {
             if (n >= plen) {
                 let pat = r.slice(-plen).join(',');
@@ -268,6 +278,7 @@ class RealBrainUltra {
             }
         }
 
+        // 2. Markov dự đoán
         if (n >= 2) {
             let k2 = r[n - 2] + ',' + r[n - 1];
             if (this.transition_matrix[k2]) {
@@ -292,6 +303,7 @@ class RealBrainUltra {
             }
         }
 
+        // 3. Bệt (Streak) dự đoán
         if (this.streak_memory[s]) {
             let data = this.streak_memory[s];
             let total = data.THEO + data.BE;
@@ -306,16 +318,19 @@ class RealBrainUltra {
             }
         }
 
+        // 4. Các chỉ báo phụ (Super Pattern, Quantum, Fibonacci, Entropy, Volatility, Cycle, Trend)
         [this.super_pattern_analysis(r), this.quantum_analysis(r), this.fibonacci_analysis(r),
          this.entropy_analysis(r), this.volatility_analysis(r), this.cycle_detection(r),
          this.trend_analysis(r)].forEach(e => { if (e) cands.push(e); });
 
+        // 5. Tổng hợp và chọn kết quả có độ tin cậy cao nhất
         if (cands.length > 0) {
             cands.sort((a, b) => b[1] - a[1]);
             let best = cands[0];
             return [best[0], Math.min(best[1], 0.97), best[2]];
         }
 
+        // Fallback nếu không có chỉ báo nào khớp
         let r50 = r.slice(-50);
         let t50 = r50.filter(x => x === 'TAI').length;
         let x50 = r50.filter(x => x === 'XIU').length;
@@ -342,6 +357,7 @@ function md5Hash(text) {
     return crypto.createHash('md5').update(text).digest('hex');
 }
 
+// Lấy lịch sử cầu từ API LC79
 async function fetchHistoryFromAPI(limit = 60) {
     const urls = [
         "https://wtxmd52.tele68.com/v1/txmd5/sessions",
@@ -365,6 +381,7 @@ async function fetchHistoryFromAPI(limit = 60) {
     return [];
 }
 
+// Kết nối WSS đến LC79
 function connectToLC79WSS(sessionId) {
     const user = activeUsers[sessionId];
     if (!user) return;
@@ -403,6 +420,8 @@ function connectToLC79WSS(sessionId) {
         if (result[0]) {
             user.current_prediction = result[0];
             user.last_prediction_conf = Math.floor(result[1] * 100);
+            
+            // Tính tiền cược (nếu bật X2/Martingale thì nhân lên theo cấp)
             let tien = user.base_bet * (user.martingale_enabled ? Math.pow(2, user.martingale_level) : 1);
 
             ioServer.emit('update_status', {
@@ -410,16 +429,17 @@ function connectToLC79WSS(sessionId) {
                 status: `📌 Phiên #${data.id} | Dự đoán: ${result[0]} (${user.last_prediction_conf}%) | ${result[2]} | Cược: ${tien.toLocaleString()}đ`
             });
 
+            // Tự động cược nếu đang bật Auto và độ tin cậy >= 55%
             if (user.auto_bet_enabled && user.last_prediction_conf >= 55) {
                 try {
                     socket.emit('bet', { type: user.current_prediction, amount: tien });
                     user.has_bet_this_session = true;
                     ioServer.emit('update_status', { sessionId, status: `🚀 ĐÃ ĐẶT ${user.current_prediction} | ${tien.toLocaleString()}đ` });
-                } catch (e) { }
+                } catch (e) { console.error("Lỗi đặt cược:", e.message); }
             }
         } else {
             user.current_prediction = Math.random() > 0.5 ? 'TAI' : 'XIU';
-            ioServer.emit('update_status', { sessionId, status: `📌 Phiên #${data.id} | Random: ${user.current_prediction}` });
+            ioServer.emit('update_status', { sessionId, status: `📌 Phiên #${data.id} | Chưa đủ DL - Random: ${user.current_prediction}` });
         }
     });
 
@@ -437,16 +457,18 @@ function connectToLC79WSS(sessionId) {
             let brain = userBrains[sessionId];
             if (brain) brain.update(user.current_prediction, res);
 
+            // Cập nhật thống kê thắng/thua
             if (user.current_prediction === res) {
                 user.win_streak++;
                 user.lose_streak = 0;
                 user.profit += user.bet_amount;
-                user.martingale_level = 0;
+                user.martingale_level = 0; // Thắng thì reset cấp X2
                 ioServer.emit('update_status', { sessionId, status: `🏆 WIN! KQ: ${res}`, profit: user.profit, loss: user.loss });
             } else {
                 user.lose_streak++;
                 user.win_streak = 0;
                 user.loss += user.bet_amount;
+                // Thua thì tăng cấp X2 (tối đa 6 cấp)
                 if (user.martingale_enabled && user.martingale_level < 6) user.martingale_level++;
                 ioServer.emit('update_status', { sessionId, status: `💀 LOSE! KQ: ${res}`, profit: user.profit, loss: user.loss });
             }
@@ -454,7 +476,11 @@ function connectToLC79WSS(sessionId) {
     });
 }
 
-// API Đăng nhập
+// ============================================================
+// 3. CÁC API ROUTES
+// ============================================================
+
+// 1. API Đăng nhập LC79
 app.post('/api/lc79/login', async (req, res) => {
     const { username, password } = req.body;
     if (!username || !password) return res.status(400).json({ error: "Thiếu thông tin" });
@@ -482,10 +508,11 @@ app.post('/api/lc79/login', async (req, res) => {
         const money = tokenRes.data.remoteLoginResp?.money || 0;
         const sessionId = crypto.randomBytes(16).toString('hex');
 
+        // Khởi tạo thông tin user
         activeUsers[sessionId] = {
             username: nickname, token, balance: money,
             profit: 0, loss: 0, auto_bet_enabled: false,
-            base_bet: 10000, bet_amount: 10000,
+            base_bet: 10000, bet_amount: 10000, // Mức cược mặc định
             martingale_enabled: false, martingale_level: 0,
             win_streak: 0, lose_streak: 0,
             raw_hist: [], history: [], points_history: [],
@@ -502,14 +529,36 @@ app.post('/api/lc79/login', async (req, res) => {
     }
 });
 
+// 2. API Bật/Tắt Auto Cược
 app.post('/api/lc79/toggle-auto', (req, res) => {
     const { sessionId } = req.body;
     const user = activeUsers[sessionId];
     if (!user) return res.status(401).json({ error: "Phiên không hợp lệ" });
+    
     user.auto_bet_enabled = !user.auto_bet_enabled;
     res.json({ success: true, autoBet: user.auto_bet_enabled });
 });
 
+// 3. API CẬP NHẬT MỨC CƯỢC TỪ WEB (MỚI THÊM)
+app.post('/api/lc79/set-bet-amount', (req, res) => {
+    const { sessionId, amount } = req.body;
+    const user = activeUsers[sessionId];
+    
+    if (!user) return res.status(401).json({ error: "Phiên không hợp lệ" });
+    
+    const betAmount = Number(amount);
+    if (isNaN(betAmount) || betAmount < 1000) {
+        return res.status(400).json({ error: "Số tiền cược tối thiểu là 1,000đ" });
+    }
+
+    user.base_bet = betAmount;
+    user.bet_amount = betAmount;
+    user.martingale_level = 0; // Reset cấp X2 khi đổi mức cược mới
+
+    res.json({ success: true, message: `Đã cập nhật mức cược: ${betAmount.toLocaleString()}đ` });
+});
+
+// 4. API Lấy trạng thái hiện tại (Dùng khi F5)
 app.post('/api/lc79/status', (req, res) => {
     const { sessionId } = req.body;
     const user = activeUsers[sessionId];
@@ -526,10 +575,12 @@ app.post('/api/lc79/status', (req, res) => {
         profit: user.profit,
         loss: user.loss,
         autoBet: user.auto_bet_enabled,
-        status: statusText
+        status: statusText,
+        betAmount: user.base_bet // Trả về số tiền cược hiện tại để web hiển thị lại
     });
 });
 
+// 5. API Đăng xuất
 app.post('/api/lc79/logout', (req, res) => {
     const { sessionId } = req.body;
     const user = activeUsers[sessionId];
@@ -544,6 +595,9 @@ app.get('/', (req, res) => {
     res.send("🚀 Server VIP Tool đang chạy ổn định!");
 });
 
+// ============================================================
+// 4. KHỞI CHẠY SERVER
+// ============================================================
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
     console.log(`🚀 Server VIP Tool chạy tại: http://localhost:${PORT}`);
