@@ -8,13 +8,23 @@ const { Server } = require('socket.io');
 const { io } = require('socket.io-client');
 const axios = require('axios');
 const crypto = require('crypto');
+const cors = require('cors'); // <-- Đã thêm thư viện CORS
 
 const app = express();
+
+// FIX LỖI CORS: Cho phép tất cả các nguồn gọi API
+app.use(cors({ origin: "*", methods: ["GET", "POST"] }));
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
 const server = http.createServer(app);
-const ioServer = new Server(server, { cors: { origin: "*" } });
+// FIX LỖI CORS CHO SOCKET.IO
+const ioServer = new Server(server, { 
+    cors: { 
+        origin: "*", 
+        methods: ["GET", "POST"] 
+    } 
+});
 
 // ============================================================
 // 1. THUẬT TOÁN AI REALBRAIN ULTRA (CHUYỂN TỪ PYTHON)
@@ -325,12 +335,7 @@ class RealBrainUltra {
     }
 }
 
-// Mỗi user có 1 bộ não AI riêng
 const userBrains = {};
-
-// ============================================================
-// 2. QUẢN LÝ USER & KẾT NỐI WSS
-// ============================================================
 const activeUsers = {};
 
 function md5Hash(text) {
@@ -380,7 +385,6 @@ function connectToLC79WSS(sessionId) {
             user.raw_hist = arr;
             user.history = arr.map(x => x.result);
             user.points_history = arr.map(x => x.total);
-            // Nạp lịch sử vào bộ não AI
             userBrains[sessionId] = new RealBrainUltra();
             userBrains[sessionId].push(arr);
             ioServer.emit('update_status', { sessionId, status: `✅ Đã kết nối. Tải ${arr.length} phiên lịch sử.` });
@@ -393,7 +397,6 @@ function connectToLC79WSS(sessionId) {
     socket.on('new-session', (data) => {
         user.session_id = data.id;
         user.has_bet_this_session = false;
-
         let brain = userBrains[sessionId];
         let result = brain.predict(user.raw_hist || []);
         
@@ -404,24 +407,19 @@ function connectToLC79WSS(sessionId) {
 
             ioServer.emit('update_status', {
                 sessionId,
-                status: `📌 Phiên #${data.id} | Dự đoán: ${result[0]} (${user.last_prediction_conf}%) | ${result[2]} | Cược: ${tien.toLocaleString()}đ`,
-                prediction: result[0],
-                confidence: user.last_prediction_conf
+                status: `📌 Phiên #${data.id} | Dự đoán: ${result[0]} (${user.last_prediction_conf}%) | ${result[2]} | Cược: ${tien.toLocaleString()}đ`
             });
 
-            // Auto cược nếu bật và độ tin cậy >= 55%
             if (user.auto_bet_enabled && user.last_prediction_conf >= 55) {
                 try {
                     socket.emit('bet', { type: user.current_prediction, amount: tien });
                     user.has_bet_this_session = true;
                     ioServer.emit('update_status', { sessionId, status: `🚀 ĐÃ ĐẶT ${user.current_prediction} | ${tien.toLocaleString()}đ` });
-                } catch (e) {
-                    console.error("Lỗi đặt cược:", e.message);
-                }
+                } catch (e) { }
             }
         } else {
             user.current_prediction = Math.random() > 0.5 ? 'TAI' : 'XIU';
-            ioServer.emit('update_status', { sessionId, status: `📌 Phiên #${data.id} | Chưa đủ DL - Random: ${user.current_prediction}` });
+            ioServer.emit('update_status', { sessionId, status: `📌 Phiên #${data.id} | Random: ${user.current_prediction}` });
         }
     });
 
@@ -436,8 +434,6 @@ function connectToLC79WSS(sessionId) {
             if (!user.points_history) user.points_history = [];
             user.points_history.push(rec.total);
 
-            if (user.raw_hist.length > 500) { user.raw_hist.shift(); user.history.shift(); user.points_history.shift(); }
-
             let brain = userBrains[sessionId];
             if (brain) brain.update(user.current_prediction, res);
 
@@ -446,25 +442,17 @@ function connectToLC79WSS(sessionId) {
                 user.lose_streak = 0;
                 user.profit += user.bet_amount;
                 user.martingale_level = 0;
-                ioServer.emit('update_status', { sessionId, status: `🏆 WIN! KQ: ${res}`, profit: user.profit, loss: user.loss, winStreak: user.win_streak });
+                ioServer.emit('update_status', { sessionId, status: `🏆 WIN! KQ: ${res}`, profit: user.profit, loss: user.loss });
             } else {
                 user.lose_streak++;
                 user.win_streak = 0;
                 user.loss += user.bet_amount;
                 if (user.martingale_enabled && user.martingale_level < 6) user.martingale_level++;
-                ioServer.emit('update_status', { sessionId, status: `💀 LOSE! KQ: ${res}`, profit: user.profit, loss: user.loss, loseStreak: user.lose_streak });
+                ioServer.emit('update_status', { sessionId, status: `💀 LOSE! KQ: ${res}`, profit: user.profit, loss: user.loss });
             }
         }
     });
-
-    socket.on('disconnect', () => {
-        console.log(`[LC79] ${user.username} mất kết nối WSS`);
-    });
 }
-
-// ============================================================
-// 3. API ROUTES
-// ============================================================
 
 // API Đăng nhập
 app.post('/api/lc79/login', async (req, res) => {
@@ -514,7 +502,6 @@ app.post('/api/lc79/login', async (req, res) => {
     }
 });
 
-// Bật/tắt auto
 app.post('/api/lc79/toggle-auto', (req, res) => {
     const { sessionId } = req.body;
     const user = activeUsers[sessionId];
@@ -523,17 +510,6 @@ app.post('/api/lc79/toggle-auto', (req, res) => {
     res.json({ success: true, autoBet: user.auto_bet_enabled });
 });
 
-// Cấu hình cược
-app.post('/api/lc79/config', (req, res) => {
-    const { sessionId, baseBet, martingale } = req.body;
-    const user = activeUsers[sessionId];
-    if (!user) return res.status(401).json({ error: "Phiên không hợp lệ" });
-    if (baseBet) { user.base_bet = Number(baseBet); user.bet_amount = Number(baseBet); }
-    if (martingale !== undefined) user.martingale_enabled = martingale;
-    res.json({ success: true });
-});
-
-// Lấy trạng thái (chống F5)
 app.post('/api/lc79/status', (req, res) => {
     const { sessionId } = req.body;
     const user = activeUsers[sessionId];
@@ -550,13 +526,10 @@ app.post('/api/lc79/status', (req, res) => {
         profit: user.profit,
         loss: user.loss,
         autoBet: user.auto_bet_enabled,
-        status: statusText,
-        winStreak: user.win_streak,
-        loseStreak: user.lose_streak
+        status: statusText
     });
 });
 
-// Đăng xuất
 app.post('/api/lc79/logout', (req, res) => {
     const { sessionId } = req.body;
     const user = activeUsers[sessionId];
@@ -566,11 +539,12 @@ app.post('/api/lc79/logout', (req, res) => {
     res.json({ success: true });
 });
 
-// ============================================================
-// 4. KHỞI CHẠY SERVER
-// ============================================================
+// Trang chủ render check
+app.get('/', (req, res) => {
+    res.send("🚀 Server VIP Tool đang chạy ổn định!");
+});
+
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
     console.log(`🚀 Server VIP Tool chạy tại: http://localhost:${PORT}`);
-    console.log(`📁 Truy cập web: http://localhost:${PORT}`);
 });
